@@ -1,0 +1,13 @@
+MAP_PAR_ID,TOWN,creditor,silo_year,instrument,book_page,enc_notes
+25A-23,AMHERST,M&T Bank (partial),2012,"Mortgage as amended through Third Amendment (2019): Revised Lot B (5.9 ac Plan Book 236 Plan 62) + Lot A (8.529 ac Plan Book 197 Plan 16)",Bk 11157 Pg 179 / Bk 12267 Pg 81 / Bk 13307 Pg 224,"PARTIAL encumbrance: approximately 14.4 of the 25A-23 parcel's ~49 acres are actually pledged to M&T. Named facilities within the pledged area: Multi-Sports Facility, Day Care Facility, Arts Complex. Series 2012 bond balance per FY25 audit: $8,989,392 outstanding at 4.4% rate."
+8_4_1,HADLEY,M&T Bank (partial),2012,First Amendment (Jan 2013) as modified by Second Amendment (Feb 2016) — 1.66-ac carve-out of larger parcel,Bk 11220 Pg 59 / Bk 12267 Pg 81,"PARTIAL encumbrance: the First Amendment (Jan 2013) added '275 Bay Road Hadley' as collateral. The Second Amendment (Feb 2016) substituted a 1.66-ac carve-out (Plan Book 228 Plan 116) as Exhibit A-2. The current MassGIS Hadley parcel at 287 Bay Rd totals 66.65 ac; only ~1.66 ac are pledged. Assumes '275 Bay Rd' in the 2013 amendment is the current 287 Bay Rd parcel — verify with title rundown."
+22B-24,AMHERST,Kendall Foundation,2024,Mortgage Exhibit A Lot 2,Bk 15269 Pg 208,"Lashway plan parcel (1980); 56.26 ac. Kendall 2024 note principal per FY25 audit: $4,500,000 at 5.0%, maturity Oct 2049."
+22B-25,AMHERST,Kendall Foundation,2024,Mortgage Exhibit A Lot 1,Bk 15269 Pg 208,"711 West Street; 6.00 ac per Exhibit A."
+22B-26,AMHERST,Kendall Foundation,2024,Mortgage Exhibit A Lot 3,Bk 15269 Pg 208,"731 West Street; 48.76 ac. Grouped in Exhibit A with 22D-10 and Hadley 9_60_A / 9_60_B."
+22D-6,AMHERST,Kendall Foundation,2024,Mortgage Exhibit A Lot 5 (Parcel #1),Bk 15269 Pg 208,"76.90 ac."
+22D-10,AMHERST,Kendall Foundation,2024,Mortgage Exhibit A Lot 3,Bk 15269 Pg 208,"37.89 ac. Grouped in Exhibit A with 22B-26 and Hadley parcels."
+22D-11,AMHERST,Kendall Foundation,2024,Mortgage Exhibit A Lot 4,Bk 15269 Pg 208,"793 West Street; 41.69 ac."
+22D-19,AMHERST,Kendall Foundation,2024,Mortgage Exhibit A Lot 5 (Parcel #2),Bk 15269 Pg 208,"16.31 ac."
+25B-15,AMHERST,Kendall Foundation,2024,Mortgage Exhibit A Bay Road tract,Bk 15269 Pg 208,"Main Bay Road parcel; 24.27 ac; 1,328 feet of frontage per Exhibit A. Possibly the 'Atkins property' referenced in the audit as the sale-trigger parcel for the $3M Kendall balloon payment."
+9_60_A,HADLEY,Kendall Foundation,2024,Mortgage Exhibit A Lot 3,Bk 15269 Pg 208,"Amherst Town Line parcel; 34.42 ac per Hadley MassGIS."
+9_60_B,HADLEY,Kendall Foundation,2024,Mortgage Exhibit A Lot 3,Bk 15269 Pg 208,"Amherst Town Line parcel; 33.89 ac per Hadley MassGIS."

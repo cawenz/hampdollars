@@ -1,0 +1,12 @@
+name: hampdollars
+title: hampdollars
+username: cawenz
+account: cawenz
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 17183048
+bundleId: 11934122
+url: https://hcapps.shinyapps.io/hampdollars/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
