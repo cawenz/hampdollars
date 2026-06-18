@@ -5,7 +5,7 @@ account: cawenz
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 17183048
-bundleId: 11934122
+bundleId: 12020595
 url: https://hcapps.shinyapps.io/hampdollars/
 version: 1
 asMultiple: FALSE
