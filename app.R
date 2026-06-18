@@ -5,11 +5,15 @@
 library(shiny)
 library(bslib)
 library(leaflet)
+library(markdown)
 library(sf)
 library(DT)
 library(dplyr)
 library(htmltools)
 library(jsonlite)
+library(leafpm)   # Geoman drawing toolbar wrapper
+
+`%||%` <- function(a, b) if (is.null(a) || length(a) == 0) b else a
 
 # ---- Land use labels ----
 use_labels <- c(
@@ -28,6 +32,62 @@ use_labels <- c(
 
 # ---- Data load ----
 parcels <- st_read("data/hampshire_college_parcels_combined.geojson", quiet = TRUE)
+
+# ---- Optional: MassGIS context layers (clipped snapshots) ----
+# Produced by data-prep/fetch_massgis_layers.R. Each is loaded lazily and only
+# wired into the Land context tab if the file exists, so the app still runs
+# on a clean checkout where these have not been fetched.
+load_optional_layer <- function(path) {
+  if (!file.exists(path)) return(NULL)
+  tryCatch(
+    sf::st_read(path, quiet = TRUE) |> sf::st_transform(4326) |> sf::st_make_valid(),
+    error = function(e) {
+      message("Failed to load ", path, ": ", conditionMessage(e))
+      NULL
+    }
+  )
+}
+dep_wetlands       <- load_optional_layer("data/dep_wetlands.geojson")
+protected_open     <- load_optional_layer("data/protected_openspace.geojson")
+priority_habitat   <- load_optional_layer("data/nhesp_priority_habitats.geojson")
+acecs              <- load_optional_layer("data/acecs.geojson")
+wellhead_protect   <- load_optional_layer("data/wellhead_protection.geojson")
+vernal_certified   <- load_optional_layer("data/vernal_pools_certified.geojson")
+vernal_potential   <- load_optional_layer("data/vernal_pools_potential.geojson")
+roads_centerline   <- load_optional_layer("data/massdot_roads.geojson")
+buildings          <- load_optional_layer("data/buildings.geojson")
+if (!is.null(acecs) && nrow(acecs) == 0) acecs <- NULL  # treat empty as missing
+
+# Per-parcel developable-land analysis (computed by data-prep/compute_developable.R)
+parcels_dev             <- load_optional_layer("data/parcels_developable.geojson")
+parcels_dev_poly        <- load_optional_layer("data/parcels_developable_polys.geojson")
+parcels_dev_poly_strict <- load_optional_layer("data/parcels_developable_polys_strict.geojson")
+
+# ---- Concept sketches: load any *.geojson under data/concepts/ ----
+# Each file becomes part of a single combined sf with `concept_source` set to
+# the file's basename (no extension). Renders as a toggleable overlay on the
+# Land context and Developable land tabs.
+load_concept_sketches <- function(dir = "data/concepts") {
+  if (!dir.exists(dir)) return(NULL)
+  files <- list.files(dir, pattern = "\\.geojson$",
+                      full.names = TRUE, ignore.case = TRUE)
+  if (length(files) == 0) return(NULL)
+  parts <- lapply(files, function(f) {
+    g <- tryCatch(sf::st_read(f, quiet = TRUE), error = function(e) NULL)
+    if (is.null(g) || nrow(g) == 0) return(NULL)
+    g <- sf::st_transform(g, 4326)
+    keep <- sf::st_sf(
+      concept_source = tools::file_path_sans_ext(basename(f)),
+      geometry       = sf::st_geometry(g)
+    )
+    keep
+  })
+  parts <- parts[!vapply(parts, is.null, logical(1))]
+  if (length(parts) == 0) return(NULL)
+  out <- do.call(rbind, parts)
+  sf::st_make_valid(out)
+}
+concept_sketches <- load_concept_sketches()
 
 # ---- Optional: BankUnited 2016 collateral polygon (computed from Plan Book 235/100) ----
 # If data/bankunited_2016_collateral.geojson exists, load it for the collateral overlay.
@@ -409,6 +469,54 @@ ui <- bslib::page_navbar(
       .map-control-group .radio-inline input[type='radio'] {
         display: none;
       }
+      /* Developable-land map: custom HTML legend in the map's bottom-right */
+      .hd-dev-legend {
+        background: rgba(255,255,255,0.92);
+        padding: 8px 12px;
+        border-radius: 6px;
+        border: 1px solid rgba(0,0,0,0.15);
+        font-family: 'Open Sans', sans-serif;
+        font-size: 12px;
+        line-height: 1.5;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        max-width: 220px;
+      }
+      .hd-leg-title {
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        font-size: 10.5px;
+        color: #495057;
+        margin-bottom: 4px;
+      }
+      .hd-leg-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 2px 0;
+      }
+      .hd-leg-swatch {
+        display: inline-block;
+        width: 20px;
+        height: 12px;
+        border: 1.5px solid #555;
+        border-radius: 2px;
+        flex-shrink: 0;
+      }
+      .hd-leg-label { color: #1a1a1a; }
+
+      /* Layer guide: tighten markdown rendering inside the bslib container */
+      .layer-guide h1 { font-size: 28px; margin-top: 0; margin-bottom: 1rem; font-weight: 700; }
+      .layer-guide h2 { font-size: 22px; margin-top: 2rem; margin-bottom: 0.6rem; font-weight: 700; }
+      .layer-guide h3 { font-size: 17px; margin-top: 1.4rem; margin-bottom: 0.4rem; font-weight: 700; }
+      .layer-guide p, .layer-guide li { color: #1a1a1a; }
+      .layer-guide ul { padding-left: 1.4rem; }
+      .layer-guide code {
+        background: #F2F2F0; padding: 1px 5px; border-radius: 3px;
+        font-size: 90%; color: #1a1a1a;
+      }
+      .layer-guide strong { font-weight: 700; }
+
       /* Opacity slider — compact */
       .map-control-group .irs { height: 36px; }
       .map-control-group .irs-bar { background: #1F3864; border-top-color: #1F3864; border-bottom-color: #1F3864; }
@@ -524,6 +632,177 @@ ui <- bslib::page_navbar(
     )
   ),
   
+  # ---- Land context tab ----
+  bslib::nav_panel(
+    title = "Land context",
+    bslib::layout_sidebar(
+      fillable = FALSE,
+      sidebar = bslib::sidebar(
+        width = 300,
+        open = TRUE,
+        tags$div(class = "text-muted small text-uppercase mb-2",
+                 style = "letter-spacing: 0.6px;", "Overlays"),
+        tags$div(class = "helper-text", style = "font-size: 12px; margin-bottom: 8px;",
+                 "Switch basemap (Satellite / Light / Topographic) in the top-right corner of the map."),
+        checkboxGroupInput(
+          "land_overlays", label = NULL,
+          choiceNames  = c("Hampshire parcels",
+                           "Hillshade (terrain relief)",
+                           "DEP wetlands",
+                           "Vernal pools (certified + potential)",
+                           "Protected & recreational open space",
+                           "NHESP Priority Habitat (rare species)",
+                           "Wellhead protection (Zone II + IWPA)",
+                           "Areas of Critical Environmental Concern (ACECs)",
+                           "Concept sketches"),
+          choiceValues = c("parcels", "hillshade",
+                           "wetlands", "vernalpools", "openspace",
+                           "habitat", "wellhead", "acec",
+                           "concepts"),
+          selected     = c("parcels", "hillshade",
+                           if (!is.null(concept_sketches)) "concepts" else NULL)
+        ),
+        sliderInput("land_overlay_opacity", "Overlay opacity",
+                    min = 0.20, max = 1.00, value = 0.65, step = 0.05,
+                    ticks = FALSE, width = "100%"),
+        tags$hr(),
+        tags$div(class = "text-muted small text-uppercase mb-2",
+                 style = "letter-spacing: 0.6px;", "Drawn shapes"),
+        uiOutput("drawn_summary"),
+        tags$div(style = "margin-top: 12px; display: flex; flex-direction: column; gap: 6px;",
+                 downloadButton("download_drawn_geojson", "Download drawn shapes (GeoJSON)",
+                                class = "btn-sm btn-outline-primary",
+                                style = "width: 100%;"),
+                 actionButton("clear_drawn", "Clear all drawn shapes",
+                              class = "btn-sm btn-outline-secondary",
+                              style = "width: 100%;")),
+        tags$hr(),
+        tags$div(class = "text-muted small text-uppercase mb-2",
+                 style = "letter-spacing: 0.6px;", "Drawing template"),
+        tags$div(class = "helper-text", style = "font-size: 12px; margin-bottom: 8px;",
+                 "Print-ready PDF with parcels and constraints. Clean version ",
+                 "uses a white background and shows buildings + roads as ",
+                 "drawn references; satellite version uses Esri imagery."),
+        tags$div(style = "display: flex; flex-direction: column; gap: 6px;",
+          downloadButton("download_pdf_template",
+                         "Map template (clean, PDF)",
+                         class = "btn-sm btn-outline-primary",
+                         style = "width: 100%;"),
+          downloadButton("download_pdf_template_satellite",
+                         "Map template (satellite, PDF)",
+                         class = "btn-sm btn-outline-primary",
+                         style = "width: 100%;")
+        )
+      ),
+      tags$div(
+        tags$div(
+          class = "helper-text",
+          style = "margin-bottom: 14px;",
+          "Use the toolbar at top-left of the map to draw polygons, rectangles, ",
+          "or lines for study areas. ",
+          tags$strong("Click anywhere on the map "),
+          "(when no draw tool is active) to look up ground elevation from the ",
+          "USGS 3DEP 1-meter elevation dataset. For terrain context, switch to the ",
+          tags$strong("Topographic basemap"), " (top-right): it shows USGS contour ",
+          "lines, hydrography, and labels...or enable the Hillshade overlay for ",
+          "relief shading on any basemap. "
+        ),
+        bslib::card(
+          bslib::card_body(padding = 0,
+                           leafletOutput("land_map", height = MAP_HEIGHT))
+        )
+      )
+    )
+  ),
+
+  # ---- Developable land tab ----
+  bslib::nav_panel(
+    title = "Developable land",
+    tags$div(
+      tags$div(
+        class = "helper-text",
+        style = "max-width: 1100px; margin: 20px auto 6px auto; padding: 0 1.25rem;",
+        "Each parcel's gross acreage minus regulatory wetlands and permanently ",
+        "protected open space gives ", tags$strong("net unconstrained"),
+        " acres. Subtracting the 100-ft wetland Buffer Zone and any NHESP ",
+        "Priority Habitat overlap gives ", tags$strong("net easy-to-build"),
+        " acres (the part where development would face the least regulatory ",
+        "friction). Estimated road frontage is the length of each parcel's ",
+        "boundary that runs within ~30 ft of a MassDOT road centerline. ",
+        "See the Layer guide tab for caveats on each input."
+      ),
+      tags$div(class = "stats-row", style = "max-width: 1100px; margin: 12px auto;",
+               uiOutput("dev_stat_tiles")),
+      tags$div(
+        style = "max-width: 1100px; margin: 0 auto 14px auto; padding: 0 1.25rem; display:flex; gap:28px; align-items:center; flex-wrap: wrap;",
+        tags$div(style = "display:flex; gap:10px; align-items:center;",
+          tags$label("Show overlays:", style = "font-weight: 600; font-size: 13px; margin: 0;"),
+          checkboxGroupInput("dev_overlays", label = NULL, inline = TRUE,
+                             choiceNames  = c("Hillshade", "Wetlands",
+                                              "Vernal pools",
+                                              "Permanent open space",
+                                              "Priority habitat",
+                                              "Developable area (green)",
+                                              "Concept sketches"),
+                             choiceValues = c("hillshade", "wetlands",
+                                              "vernalpools",
+                                              "openspace", "habitat",
+                                              "devarea", "concepts"),
+                             selected = c("devarea", "wetlands",
+                                          if (!is.null(concept_sketches)) "concepts" else NULL))
+        ),
+        tags$div(style = "display:flex; gap:10px; align-items:center;",
+          tags$label("Wetland buffer:", style = "font-weight: 600; font-size: 13px; margin: 0; white-space: nowrap;"),
+          radioButtons("dev_buffer_scenario", label = NULL, inline = TRUE,
+                       choices = c("Standard (100 ft)" = "standard",
+                                   "Strict (200 ft)"   = "strict"),
+                       selected = "standard")
+        ),
+        tags$div(style = "display:flex; gap:10px; align-items:center; min-width: 220px;",
+          tags$label("Overlay opacity:", style = "font-weight: 600; font-size: 13px; margin: 0; white-space: nowrap;"),
+          sliderInput("dev_overlay_opacity", label = NULL,
+                      min = 0.0, max = 1.0, value = 1.0, step = 0.05,
+                      ticks = FALSE, width = "140px")
+        )
+      ),
+      tags$div(style = "max-width: 1100px; margin: 0 auto; padding: 0 1.25rem;",
+        bslib::card(
+          bslib::card_body(padding = 0,
+                           leafletOutput("dev_map", height = MAP_HEIGHT))
+        ),
+        tags$div(class = "section-gap"),
+        bslib::card(
+          bslib::card_header(tags$div(
+            style = "display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;",
+            tags$span("Selected parcels"),
+            actionButton("clear_dev_selection", "Clear selection",
+                         class = "btn-sm btn-outline-secondary")
+          )),
+          bslib::card_body(uiOutput("dev_selection_summary"))
+        ),
+        tags$div(class = "section-gap"),
+        bslib::card(
+          bslib::card_header(tags$span("Per-parcel summary")),
+          bslib::card_body(DTOutput("dev_table"))
+        )
+      )
+    )
+  ),
+
+  # ---- Layer guide tab ----
+  bslib::nav_panel(
+    title = "Layer guide",
+    tags$div(
+      class = "layer-guide",
+      style = "max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; line-height: 1.65;",
+      if (file.exists("docs/layer_guide.md")) {
+        shiny::includeMarkdown("docs/layer_guide.md")
+      } else {
+        tags$p(tags$em("Layer guide not found. Expected at docs/layer_guide.md."))
+      }
+    )
+  ),
+
   # ---- Debt tab ----
   bslib::nav_panel(
     title = "Debt",
@@ -606,7 +885,7 @@ ui <- bslib::page_navbar(
               tags$td(style = "text-align: right; font-variant-numeric: tabular-nums;", "4.4%"),
               tags$td("2026"),
               tags$td("Short-term"),
-              tags$td("~16.1 acres of 25A-23 (Amherst) + ~1.66 ac of 8_4_1 (Hadley). Named facilities: Multi-Sports, Day Care, Arts Complex.")
+              tags$td("~16.1 acres of 25A-23 (Amherst) + ~1.66 ac of 8_4_1 (Hadley). Named facilities: Multi-Sports, Day Care.")
             ),
             tags$tr(
               tags$td(tags$strong("2016")),
@@ -616,7 +895,7 @@ ui <- bslib::page_navbar(
               tags$td(style = "text-align: right; font-variant-numeric: tabular-nums;", "2.8%"),
               tags$td("2026"),
               tags$td("Short-term"),
-              tags$td("17.6-acre carve-out of 22D-15, per Plan Book 235 Plan 100. Contains Library, Kern, Cole, Crown, Enfield.")
+              tags$td("17.6-acre carve-out of 22D-15, per Plan Book 235 Plan 100. Contains Library, Kern Center, Cole Science, Robert Crown Center, Red Barn.")
             ),
             tags$tr(
               tags$td(tags$strong("2024")),
@@ -1027,6 +1306,1258 @@ server <- function(input, output, session) {
     )
   })
   
+  # ===== Land context tab =====
+
+  # Tile service URLs (all free, no API keys required)
+  USGS_TOPO_URL <- paste0(
+    "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/",
+    "tile/{z}/{y}/{x}"
+  )
+  ESRI_HILLSHADE_URL <- paste0(
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/",
+    "World_Hillshade/MapServer/tile/{z}/{y}/{x}"
+  )
+
+  # Reactive store for user-drawn shapes (as an sf collection in WGS84)
+  drawn_sf <- reactiveVal(NULL)
+
+  # Helper: parse a single leafpm GeoJSON Feature into a one-row sf data frame.
+  # Stores the leaflet feature id so we can match against edits/deletes later.
+  feature_to_sf <- function(feature) {
+    if (is.null(feature)) return(NULL)
+    fid <- feature[["_leaflet_id"]] %||% NA_integer_
+    geo <- jsonlite::toJSON(feature, auto_unbox = TRUE, null = "null")
+    out <- tryCatch(sf::st_read(geo, quiet = TRUE), error = function(e) NULL)
+    if (is.null(out) || nrow(out) == 0) return(NULL)
+    out$leaflet_id <- as.integer(fid)
+    sf::st_sf(out, crs = 4326)
+  }
+
+  # ----- Vector overlay helpers (DRY across initial render + toggle) -----
+  add_wetlands_layer <- function(map, data, op) {
+    map |> addPolygons(
+      data        = data,
+      group       = "wetlands",
+      fillColor   = "#3FA9F5",
+      fillOpacity = pmin(1, op * 0.55),
+      color       = "#1F77B4",
+      opacity     = 1,
+      weight      = 0.8,
+      label       = ~paste0(IT_VALDESC, " — ", round(AREAACRES, 2), " ac"),
+      options     = pathOptions(interactive = TRUE)
+    )
+  }
+  add_openspace_layer <- function(map, data, op) {
+    owner_label <- c(M = "Municipal", S = "State", F = "Federal",
+                     P = "Private (nonprofit)", L = "Land trust",
+                     N = "Nonprofit", O = "Other")
+    prot_label  <- c(P = "Permanent", L = "Limited", N = "None")
+    map |> addPolygons(
+      data        = data,
+      group       = "openspace",
+      fillColor   = "#2CA02C",
+      fillOpacity = pmin(1, op * 0.35),
+      color       = "#1B5E20",
+      opacity     = 1,
+      weight      = 1.2,
+      label       = ~paste0(
+        ifelse(is.na(SITE_NAME) | SITE_NAME == "", "Protected open space", SITE_NAME),
+        " — ", unname(owner_label[OWNER_TYPE]),
+        ", ", unname(prot_label[LEV_PROT]), " protection"
+      ),
+      options     = pathOptions(interactive = TRUE)
+    )
+  }
+  add_habitat_layer <- function(map, data, op) {
+    map |> addPolygons(
+      data        = data,
+      group       = "habitat",
+      fillColor   = "#9B59B6",
+      fillOpacity = pmin(1, op * 0.40),
+      color       = "#5E3370",
+      opacity     = 1,
+      weight      = 1.5,
+      dashArray   = "6,3",
+      label       = ~paste0("NHESP Priority Habitat #", PRIHAB_ID),
+      options     = pathOptions(interactive = TRUE)
+    )
+  }
+  add_wellhead_layer <- function(map, data, op) {
+    color_for <- function(zt) {
+      ifelse(grepl("^Zone II", zt %||% ""), "#0288D1", "#80DEEA")
+    }
+    map |> addPolygons(
+      data        = data,
+      group       = "wellhead",
+      fillColor   = ~color_for(ZONE_TYPE),
+      fillOpacity = pmin(1, op * 0.30),
+      color       = ~color_for(ZONE_TYPE),
+      opacity     = 1,
+      weight      = 1.5,
+      label       = ~paste0(SUPPLIER, " — ", ZONE_TYPE,
+                            " (", TOWN, ")"),
+      options     = pathOptions(interactive = TRUE)
+    )
+  }
+  add_acec_layer <- function(map, data, op) {
+    map |> addPolygons(
+      data        = data,
+      group       = "acec",
+      fillColor   = "#FF7043",
+      fillOpacity = pmin(1, op * 0.35),
+      color       = "#BF360C",
+      opacity     = 1,
+      weight      = 2,
+      label       = ~paste0(NAME, " ACEC"),
+      options     = pathOptions(interactive = TRUE)
+    )
+  }
+  # User-drawn concept sketches loaded from data/concepts/*.geojson.
+  # Distinct magenta tone so they stand out from the regulatory palette.
+  add_concepts_layer <- function(map, data, op) {
+    geom_types <- as.character(sf::st_geometry_type(data))
+    is_poly <- geom_types %in% c("POLYGON", "MULTIPOLYGON")
+    is_line <- geom_types %in% c("LINESTRING", "MULTILINESTRING")
+    if (any(is_poly)) {
+      map <- map |> addPolygons(
+        data = data[is_poly, ], group = "concepts",
+        fillColor = "#E91E63", fillOpacity = pmin(1, op * 0.30),
+        color = "#880E4F", opacity = pmin(1, op),
+        weight = 2, dashArray = "8,3",
+        label = ~paste0("Concept: ", concept_source),
+        options = pathOptions(interactive = TRUE)
+      )
+    }
+    if (any(is_line)) {
+      map <- map |> addPolylines(
+        data = data[is_line, ], group = "concepts",
+        color = "#880E4F", opacity = pmin(1, op),
+        weight = 3, dashArray = "8,3",
+        label = ~paste0("Concept: ", concept_source),
+        options = pathOptions(interactive = TRUE)
+      )
+    }
+    map
+  }
+
+  # Vernal pools are points. Certified = solid teal-green, Potential = hollow.
+  add_vernalpools_layer <- function(map, certified, potential, op) {
+    if (!is.null(potential) && nrow(potential) > 0) {
+      map <- map |> addCircleMarkers(
+        data = potential, group = "vernalpools",
+        radius = 4, stroke = TRUE, weight = 1.5,
+        color = "#00897B", fillColor = "#FFFFFF",
+        opacity = pmin(1, op), fillOpacity = pmin(1, op * 0.5),
+        label = "Potential vernal pool (NHESP)",
+        options = pathOptions(interactive = TRUE)
+      )
+    }
+    if (!is.null(certified) && nrow(certified) > 0) {
+      map <- map |> addCircleMarkers(
+        data = certified, group = "vernalpools",
+        radius = 5, stroke = TRUE, weight = 1.5,
+        color = "#004D40", fillColor = "#1DE9B6",
+        opacity = pmin(1, op), fillOpacity = pmin(1, op * 0.9),
+        label = ~paste0("Certified vernal pool #", CVP_NUM),
+        options = pathOptions(interactive = TRUE)
+      )
+    }
+    map
+  }
+
+  # Render the base land-context map. We add leafpm at render time so the
+  # drawing toolbar is wired up exactly once.
+  output$land_map <- renderLeaflet({
+    bb <- sf::st_bbox(parcels)
+    initial_overlays <- isolate(input$land_overlays %||% c("parcels", "hillshade"))
+    initial_op       <- isolate(input$land_overlay_opacity %||% 0.65)
+
+    m <- leaflet(options = leafletOptions(zoomControl = TRUE)) |>
+      addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
+      addProviderTiles("CartoDB.Positron", group = "Light") |>
+      addTiles(
+        urlTemplate = USGS_TOPO_URL,
+        attribution = "USGS The National Map · USGS Topographic basemap",
+        options     = tileOptions(maxZoom = 16),
+        group       = "Topographic"
+      ) |>
+      addPolygons(
+        data        = parcels,
+        group       = "parcels_overlay",
+        fillColor   = "#FFEB3B",
+        fillOpacity = 0.12,
+        color       = "#FF6B00",
+        opacity     = 1,
+        weight      = 2.5,
+        label       = ~paste0(MAP_PAR_ID, " — ", SITE_ADDR),
+        popup       = ~popup_html,
+        highlightOptions = highlightOptions(
+          weight = 4, color = "#ffffff",
+          fillOpacity = 0.25, bringToFront = TRUE
+        ),
+        options     = pathOptions(interactive = TRUE)
+      )
+
+    if (!("parcels" %in% initial_overlays)) {
+      m <- m |> hideGroup("parcels_overlay")
+    }
+
+    if ("hillshade" %in% initial_overlays) {
+      m <- m |> addTiles(
+        urlTemplate = ESRI_HILLSHADE_URL,
+        attribution = "Hillshade &copy; Esri",
+        options     = tileOptions(opacity = initial_op, maxZoom = 19),
+        group       = "hillshade"
+      )
+    }
+
+    if ("wetlands" %in% initial_overlays && !is.null(dep_wetlands)) {
+      m <- add_wetlands_layer(m, dep_wetlands, initial_op)
+    }
+    if ("vernalpools" %in% initial_overlays &&
+        (!is.null(vernal_certified) || !is.null(vernal_potential))) {
+      m <- add_vernalpools_layer(m, vernal_certified, vernal_potential, initial_op)
+    }
+    if ("openspace" %in% initial_overlays && !is.null(protected_open)) {
+      m <- add_openspace_layer(m, protected_open, initial_op)
+    }
+    if ("habitat" %in% initial_overlays && !is.null(priority_habitat)) {
+      m <- add_habitat_layer(m, priority_habitat, initial_op)
+    }
+    if ("wellhead" %in% initial_overlays && !is.null(wellhead_protect)) {
+      m <- add_wellhead_layer(m, wellhead_protect, initial_op)
+    }
+    if ("acec" %in% initial_overlays && !is.null(acecs)) {
+      m <- add_acec_layer(m, acecs, initial_op)
+    }
+    if ("concepts" %in% initial_overlays && !is.null(concept_sketches)) {
+      m <- add_concepts_layer(m, concept_sketches, initial_op)
+    }
+
+    m |> addLayersControl(
+        baseGroups = c("Satellite", "Light", "Topographic"),
+        options = layersControlOptions(collapsed = FALSE)
+      ) |>
+      leafpm::addPmToolbar(
+        targetGroup = "drawn",
+        toolbarOptions = leafpm::pmToolbarOptions(
+          position         = "topleft",
+          drawMarker       = FALSE,
+          drawCircle       = FALSE,
+          drawPolyline     = TRUE,
+          drawRectangle    = TRUE,
+          drawPolygon      = TRUE,
+          editMode         = TRUE,
+          cutPolygon       = FALSE,
+          removalMode      = TRUE
+        ),
+        drawOptions = leafpm::pmDrawOptions(
+          snappable    = TRUE,
+          allowSelfIntersection = FALSE
+        ),
+        editOptions = leafpm::pmEditOptions(
+          preventMarkerRemoval = FALSE,
+          allowSelfIntersection = FALSE
+        )
+      ) |>
+      fitBounds(bb[["xmin"]], bb[["ymin"]], bb[["xmax"]], bb[["ymax"]]) |>
+      htmlwidgets::onRender("
+        function(el, x) {
+          var map = this;
+          window._hd_land_map = map;
+
+          // Track basemap for any future basemap-aware styling
+          function setBaseClass(name) {
+            if (name === 'Light') {
+              el.classList.add('hd-light-base');
+              el.classList.remove('hd-dark-base');
+            } else {
+              el.classList.add('hd-dark-base');
+              el.classList.remove('hd-light-base');
+            }
+          }
+          setBaseClass('Satellite');
+          map.on('baselayerchange', function(e) { setBaseClass(e.name); });
+
+          // Track ONLY user-drawn layers (not addPolygons overlays). We listen
+          // for Geoman's create event and stamp each new layer so we can
+          // remove exactly those on 'Clear all drawn shapes'.
+          window._hd_drawn_ids = new Set();
+          map.on('pm:create', function(e) {
+            if (e && e.layer) window._hd_drawn_ids.add(L.Util.stamp(e.layer));
+          });
+          map.on('pm:remove', function(e) {
+            if (e && e.layer) window._hd_drawn_ids.delete(L.Util.stamp(e.layer));
+          });
+
+          if (window.Shiny) {
+            Shiny.addCustomMessageHandler('hd_clear_geoman', function(message) {
+              var m = window._hd_land_map;
+              if (!m) return;
+              var toRemove = [];
+              m.eachLayer(function(layer) {
+                if (window._hd_drawn_ids.has(L.Util.stamp(layer))) {
+                  toRemove.push(layer);
+                }
+              });
+              toRemove.forEach(function(layer) { m.removeLayer(layer); });
+              window._hd_drawn_ids.clear();
+            });
+          }
+        }
+      ")
+  })
+
+  # Toggle the overlays on/off based on the checkbox group.
+  # Initial state is rendered inside output$land_map; this only handles changes.
+  observeEvent(
+    list(input$land_overlays, input$land_overlay_opacity),
+    ignoreInit = TRUE,
+    {
+    proxy <- leafletProxy("land_map") |>
+      clearGroup("hillshade") |>
+      clearGroup("wetlands") |>
+      clearGroup("vernalpools") |>
+      clearGroup("openspace") |>
+      clearGroup("habitat") |>
+      clearGroup("wellhead") |>
+      clearGroup("acec") |>
+      clearGroup("concepts")
+
+    overlays <- input$land_overlays %||% character(0)
+    op <- input$land_overlay_opacity %||% 0.65
+
+    if ("hillshade" %in% overlays) {
+      proxy <- proxy |> addTiles(
+        urlTemplate = ESRI_HILLSHADE_URL,
+        attribution = "Hillshade &copy; Esri",
+        options     = tileOptions(opacity = op, maxZoom = 19),
+        group       = "hillshade"
+      )
+    }
+
+    if ("wetlands" %in% overlays && !is.null(dep_wetlands)) {
+      proxy <- add_wetlands_layer(proxy, dep_wetlands, op)
+    }
+    if ("vernalpools" %in% overlays &&
+        (!is.null(vernal_certified) || !is.null(vernal_potential))) {
+      proxy <- add_vernalpools_layer(proxy, vernal_certified, vernal_potential, op)
+    }
+    if ("openspace" %in% overlays && !is.null(protected_open)) {
+      proxy <- add_openspace_layer(proxy, protected_open, op)
+    }
+    if ("habitat" %in% overlays && !is.null(priority_habitat)) {
+      proxy <- add_habitat_layer(proxy, priority_habitat, op)
+    }
+    if ("wellhead" %in% overlays && !is.null(wellhead_protect)) {
+      proxy <- add_wellhead_layer(proxy, wellhead_protect, op)
+    }
+    if ("acec" %in% overlays && !is.null(acecs)) {
+      proxy <- add_acec_layer(proxy, acecs, op)
+    }
+    if ("concepts" %in% overlays && !is.null(concept_sketches)) {
+      proxy <- add_concepts_layer(proxy, concept_sketches, op)
+    }
+
+    if ("parcels" %in% overlays) {
+      proxy |> showGroup("parcels_overlay")
+    } else {
+      proxy |> hideGroup("parcels_overlay")
+    }
+  })
+
+  # ----- Elevation lookup (USGS National Map point query service) -----
+  # Free, no key, returns elevation in requested units. Synchronous; ~0.5–1 s per click.
+  get_elevation_ft <- function(lng, lat) {
+    url <- sprintf(
+      "https://epqs.nationalmap.gov/v1/json?x=%f&y=%f&units=Feet&wkid=4326&includeDate=False",
+      lng, lat
+    )
+    body <- tryCatch(jsonlite::fromJSON(url), error = function(e) NULL)
+    if (is.null(body)) return(NA_real_)
+    val <- suppressWarnings(as.numeric(body$value))
+    if (is.na(val) || val < -1000) return(NA_real_)
+    val
+  }
+
+  # Map click (when not in a drawing/edit mode) -> drop a pin with elevation
+  observeEvent(input$land_map_click, {
+    click <- input$land_map_click
+    if (is.null(click)) return()
+    ft <- get_elevation_ft(click$lng, click$lat)
+    label <- if (is.na(ft)) {
+      "Elevation unavailable"
+    } else {
+      sprintf("Elevation: %s ft (%.1f m)",
+              formatC(round(ft, 1), big.mark = ",", format = "f", digits = 1),
+              ft * 0.3048)
+    }
+    popup_html <- sprintf(
+      "<div style='font-family:\"Open Sans\",sans-serif; font-size:13px;'>%s<br/><span style='color:#777; font-size:11px;'>USGS 3DEP · %.5f, %.5f</span></div>",
+      label, click$lat, click$lng
+    )
+    leafletProxy("land_map") |>
+      clearGroup("elev_pin") |>
+      addCircleMarkers(
+        lng = click$lng, lat = click$lat,
+        group = "elev_pin",
+        radius = 6, color = "#FFFFFF", weight = 2,
+        fillColor = "#FF3D00", fillOpacity = 1,
+        label = label,
+        popup = popup_html
+      )
+  })
+
+  # ----- Drawing event handlers -----
+
+  # New shape drawn -> append to drawn_sf
+  observeEvent(input$land_map_draw_new_feature, {
+    new_feat <- feature_to_sf(input$land_map_draw_new_feature)
+    if (is.null(new_feat)) return()
+
+    current <- drawn_sf()
+    if (is.null(current) || nrow(current) == 0) {
+      drawn_sf(new_feat)
+    } else {
+      # Align columns before rbind (sf is picky about column order)
+      common_cols <- intersect(names(current), names(new_feat))
+      if (length(common_cols) == 0) common_cols <- character(0)
+      drawn_sf(rbind(
+        current[, c(common_cols, "leaflet_id"), drop = FALSE] |> unique(),
+        new_feat[, c(common_cols, "leaflet_id"), drop = FALSE] |> unique()
+      ))
+    }
+  })
+
+  # Features edited -> replace matching rows by leaflet_id
+  observeEvent(input$land_map_draw_edited_features, {
+    edited <- input$land_map_draw_edited_features
+    if (is.null(edited) || length(edited$features) == 0) return()
+
+    current <- drawn_sf()
+    if (is.null(current)) return()
+
+    # Convert edited FeatureCollection to sf, then upsert by leaflet_id
+    for (f in edited$features) {
+      new_row <- feature_to_sf(f)
+      if (is.null(new_row)) next
+      fid <- new_row$leaflet_id
+      keep <- is.na(current$leaflet_id) | current$leaflet_id != fid
+      current <- rbind(current[keep, ], new_row)
+    }
+    drawn_sf(current)
+  })
+
+  # Features deleted -> drop matching rows by leaflet_id
+  observeEvent(input$land_map_draw_deleted_features, {
+    deleted <- input$land_map_draw_deleted_features
+    if (is.null(deleted) || length(deleted$features) == 0) return()
+
+    current <- drawn_sf()
+    if (is.null(current) || nrow(current) == 0) return()
+
+    deleted_ids <- vapply(deleted$features, function(f) {
+      as.integer(f[["_leaflet_id"]] %||% NA_integer_)
+    }, integer(1))
+
+    keep <- !current$leaflet_id %in% deleted_ids
+    drawn_sf(current[keep, ])
+  })
+
+  # Clear-all button: wipe the reactive AND ask the client to remove all
+  # Geoman-managed layers (clearGroup doesn't reach into Geoman's internals).
+  observeEvent(input$clear_drawn, {
+    drawn_sf(NULL)
+    session$sendCustomMessage("hd_clear_geoman", list())
+  })
+
+  # Export drawn shapes as a single GeoJSON. Pour back into data/concepts/ to
+  # have them reappear as a "Concept sketches" overlay on next app start.
+  output$download_drawn_geojson <- downloadHandler(
+    filename = function() {
+      sprintf("drawn_shapes_%s.geojson", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      g <- drawn_sf()
+      if (is.null(g) || nrow(g) == 0) {
+        writeLines('{"type":"FeatureCollection","features":[]}', file)
+        return()
+      }
+      # Drop internal columns we don't want polluting the saved file
+      g$leaflet_id <- NULL
+      sf::st_write(g, file, driver = "GeoJSON",
+                   delete_dsn = TRUE, quiet = TRUE)
+    }
+  )
+
+  # Export a printable PDF map template with parcels and constraint context on
+  # a clean white background. Uses ggplot2 + ggspatial for a real cartographic
+  # render (north arrow, scale bar, graticule).
+  output$download_pdf_template <- downloadHandler(
+    filename = function() {
+      sprintf("hampshire_drawing_template_%s.pdf", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      have_gg  <- requireNamespace("ggplot2",   quietly = TRUE)
+      have_ggs <- requireNamespace("ggspatial", quietly = TRUE)
+      if (!have_gg || !have_ggs) {
+        stop("This export needs ggplot2 and ggspatial: ",
+             "install.packages(c('ggplot2','ggspatial')).")
+      }
+
+      # Reproject everything to MA State Plane (meters) for accurate distances
+      # and a clean printed grid.
+      to_mp <- function(x) if (is.null(x)) NULL else sf::st_transform(x, 26986)
+      par_mp <- to_mp(parcels)
+      wet_mp <- to_mp(dep_wetlands)
+      osp_mp <- to_mp(protected_open_perm)
+      hab_mp <- to_mp(priority_habitat)
+      rds_mp <- to_mp(roads_centerline)
+      bld_mp <- to_mp(buildings)
+
+      # Clip the view to the parcels' bbox (with ~10% padding) so the wider
+      # context layers don't blow the print extent out.
+      bb_p <- sf::st_bbox(par_mp)
+      span <- max(bb_p["xmax"] - bb_p["xmin"], bb_p["ymax"] - bb_p["ymin"])
+      pad  <- 0.08 * span
+      view_xlim <- c(bb_p["xmin"] - pad, bb_p["xmax"] + pad)
+      view_ylim <- c(bb_p["ymin"] - pad, bb_p["ymax"] + pad)
+
+      # Clip dense layers (roads, buildings) to the view bbox so we render only
+      # what's visible. 12k buildings statewide-clipped would slow ggsave.
+      view_box <- sf::st_as_sfc(sf::st_bbox(c(
+        xmin = unname(view_xlim[1]), ymin = unname(view_ylim[1]),
+        xmax = unname(view_xlim[2]), ymax = unname(view_ylim[2])),
+        crs = 26986))
+      clip_to_view <- function(x) {
+        if (is.null(x)) return(NULL)
+        idx <- lengths(sf::st_intersects(x, view_box)) > 0
+        if (!any(idx)) return(NULL)
+        x[idx, ]
+      }
+      rds_mp <- clip_to_view(rds_mp)
+      bld_mp <- clip_to_view(bld_mp)
+
+      p <- ggplot2::ggplot()
+
+      if (!is.null(wet_mp)) {
+        p <- p + ggplot2::geom_sf(
+          data = wet_mp, fill = "#4FC3F7", alpha = 0.22,
+          color = "#01579B", linewidth = 0.12)
+      }
+      if (!is.null(osp_mp)) {
+        p <- p + ggplot2::geom_sf(
+          data = osp_mp, fill = "#FFC107", alpha = 0.18,
+          color = "#FF6F00", linewidth = 0.15)
+      }
+      if (!is.null(hab_mp)) {
+        p <- p + ggplot2::geom_sf(
+          data = hab_mp, fill = NA,
+          color = "#6A1B9A", linewidth = 0.35, linetype = "dashed")
+      }
+      if (!is.null(rds_mp)) {
+        # Class 1-3 = arterials/highways (thicker); 4 = collector; 5 = local
+        rds_major <- rds_mp[!is.na(rds_mp$CLASS) & rds_mp$CLASS %in% 1:3, ]
+        rds_minor <- rds_mp[!is.na(rds_mp$CLASS) & rds_mp$CLASS %in% 4:5, ]
+        if (nrow(rds_minor) > 0) {
+          p <- p + ggplot2::geom_sf(data = rds_minor,
+                                    color = "#9E9E9E", linewidth = 0.25)
+        }
+        if (nrow(rds_major) > 0) {
+          p <- p + ggplot2::geom_sf(data = rds_major,
+                                    color = "#616161", linewidth = 0.5)
+        }
+      }
+      if (!is.null(bld_mp)) {
+        p <- p + ggplot2::geom_sf(
+          data = bld_mp, fill = "#757575", color = "#424242",
+          linewidth = 0.08, alpha = 0.85)
+      }
+
+      p <- p +
+        ggplot2::geom_sf(data = par_mp, fill = NA,
+                         color = "#009b9e", linewidth = 0.7) +
+        ggplot2::geom_sf_text(
+          data = par_mp,
+          ggplot2::aes(label = MAP_PAR_ID),
+          size = 2.2, color = "#1a1a1a", fontface = "bold") +
+        ggspatial::annotation_scale(location = "bl", style = "bar",
+                                    line_width = 0.5) +
+        ggspatial::annotation_north_arrow(
+          location = "tr",
+          style = ggspatial::north_arrow_minimal(
+            text_size = 8, line_width = 0.6)) +
+        ggplot2::coord_sf(crs = 26986,
+                          xlim = view_xlim, ylim = view_ylim,
+                          expand = FALSE) +
+        ggplot2::theme_bw(base_size = 9) +
+        ggplot2::labs(
+          title    = "Hampshire College: Land Context Drawing Template",
+          subtitle = sprintf(
+            "Generated %s. Hand-sketch on this template, then retrace in the app to bring concepts back as a layer.",
+            format(Sys.Date(), "%B %d, %Y")),
+          caption  = paste(
+            "Projection: NAD83 / Massachusetts State Plane Mainland (m).",
+            "Teal = parcel boundaries. Gray polygons = buildings.",
+            "Gray lines = roads (darker = arterials).",
+            "Blue = DEP wetlands. Amber = permanent protected open space.",
+            "Dashed purple = NHESP Priority Habitat."),
+          x = NULL, y = NULL
+        ) +
+        ggplot2::theme(
+          panel.grid       = ggplot2::element_line(color = "#eeeeee",
+                                                   linewidth = 0.25),
+          axis.text        = ggplot2::element_text(size = 6,
+                                                   color = "#666"),
+          plot.title       = ggplot2::element_text(size = 13,
+                                                   face = "bold"),
+          plot.subtitle    = ggplot2::element_text(size = 9,
+                                                   color = "#444",
+                                                   margin = ggplot2::margin(b = 6)),
+          plot.caption     = ggplot2::element_text(size = 7,
+                                                   color = "#666",
+                                                   hjust = 0),
+          panel.background = ggplot2::element_rect(fill = "#FFFFFF",
+                                                   color = NA),
+          plot.background  = ggplot2::element_rect(fill = "#FFFFFF",
+                                                   color = NA),
+          plot.margin      = ggplot2::margin(10, 12, 8, 12)
+        )
+
+      ggplot2::ggsave(file, plot = p, width = 11, height = 8.5,
+                      units = "in", device = "pdf", dpi = 200)
+    }
+  )
+
+  # Satellite-imagery version of the template. Fetches Esri World Imagery tiles
+  # for the view extent at print time. Slower than the clean version because of
+  # the network fetch; resulting PDF is also larger.
+  output$download_pdf_template_satellite <- downloadHandler(
+    filename = function() {
+      sprintf("hampshire_drawing_template_satellite_%s.pdf",
+              format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      have_gg  <- requireNamespace("ggplot2",   quietly = TRUE)
+      have_ggs <- requireNamespace("ggspatial", quietly = TRUE)
+      have_mt  <- requireNamespace("maptiles",  quietly = TRUE)
+      have_tt  <- requireNamespace("tidyterra", quietly = TRUE)
+      if (!have_gg || !have_ggs || !have_mt || !have_tt) {
+        stop("This export needs ggplot2, ggspatial, maptiles, and tidyterra: ",
+             "install.packages(c('ggplot2','ggspatial','maptiles','tidyterra')).")
+      }
+
+      to_mp <- function(x) if (is.null(x)) NULL else sf::st_transform(x, 26986)
+      par_mp <- to_mp(parcels)
+      wet_mp <- to_mp(dep_wetlands)
+      osp_mp <- to_mp(protected_open_perm)
+      hab_mp <- to_mp(priority_habitat)
+      rds_mp <- to_mp(roads_centerline)
+
+      bb_p <- sf::st_bbox(par_mp)
+      span <- max(bb_p["xmax"] - bb_p["xmin"], bb_p["ymax"] - bb_p["ymin"])
+      pad  <- 0.08 * span
+      view_xlim <- c(unname(bb_p["xmin"]) - pad, unname(bb_p["xmax"]) + pad)
+      view_ylim <- c(unname(bb_p["ymin"]) - pad, unname(bb_p["ymax"]) + pad)
+      view_box <- sf::st_as_sfc(sf::st_bbox(c(
+        xmin = view_xlim[1], ymin = view_ylim[1],
+        xmax = view_xlim[2], ymax = view_ylim[2]),
+        crs = 26986))
+
+      # Clip roads to view (skip buildings; satellite imagery already shows them)
+      clip_to_view <- function(x) {
+        if (is.null(x)) return(NULL)
+        idx <- lengths(sf::st_intersects(x, view_box)) > 0
+        if (!any(idx)) return(NULL)
+        x[idx, ]
+      }
+      rds_mp <- clip_to_view(rds_mp)
+
+      # Fetch satellite tiles. zoom 15 gives ~1 m/px around this latitude;
+      # that's enough resolution to print clearly at 11x8.5 in.
+      tiles <- maptiles::get_tiles(
+        view_box,
+        provider = "Esri.WorldImagery",
+        zoom     = 15,
+        crop     = TRUE,
+        cachedir = tempdir()
+      )
+
+      p <- ggplot2::ggplot() +
+        tidyterra::geom_spatraster_rgb(data = tiles, maxcell = 5e6)
+
+      # Constraint outlines: bright, no/low fill so imagery shows through
+      if (!is.null(wet_mp)) {
+        p <- p + ggplot2::geom_sf(
+          data = wet_mp, fill = NA,
+          color = "#4FC3F7", linewidth = 0.35)
+      }
+      if (!is.null(osp_mp)) {
+        p <- p + ggplot2::geom_sf(
+          data = osp_mp, fill = "#FFC107", alpha = 0.18,
+          color = "#FFD54F", linewidth = 0.3)
+      }
+      if (!is.null(hab_mp)) {
+        p <- p + ggplot2::geom_sf(
+          data = hab_mp, fill = NA,
+          color = "#F48FB1", linewidth = 0.45, linetype = "dashed")
+      }
+      if (!is.null(rds_mp)) {
+        rds_major <- rds_mp[!is.na(rds_mp$CLASS) & rds_mp$CLASS %in% 1:3, ]
+        rds_minor <- rds_mp[!is.na(rds_mp$CLASS) & rds_mp$CLASS %in% 4:5, ]
+        if (nrow(rds_minor) > 0) {
+          p <- p + ggplot2::geom_sf(data = rds_minor,
+                                    color = "#FFEB3B", linewidth = 0.25,
+                                    alpha = 0.75)
+        }
+        if (nrow(rds_major) > 0) {
+          p <- p + ggplot2::geom_sf(data = rds_major,
+                                    color = "#FFC107", linewidth = 0.5,
+                                    alpha = 0.85)
+        }
+      }
+
+      p <- p +
+        ggplot2::geom_sf(data = par_mp, fill = NA,
+                         color = "#1DE9B6", linewidth = 1.1) +
+        # White-fill labels so parcel IDs read against any background
+        ggplot2::geom_sf_label(
+          data = par_mp,
+          ggplot2::aes(label = MAP_PAR_ID),
+          fill = "white", color = "black",
+          size = 2.1, fontface = "bold", alpha = 0.85,
+          label.padding = ggplot2::unit(0.10, "lines"),
+          label.size = 0.1) +
+        ggspatial::annotation_scale(
+          location = "bl", style = "bar",
+          bar_cols = c("white", "black"),
+          text_col = "white", line_col = "white") +
+        ggspatial::annotation_north_arrow(
+          location = "tr",
+          style = ggspatial::north_arrow_minimal(
+            line_col = "white", fill = "white", text_col = "white",
+            text_size = 8)) +
+        ggplot2::coord_sf(crs = 26986,
+                          xlim = view_xlim, ylim = view_ylim,
+                          expand = FALSE) +
+        ggplot2::labs(
+          title    = "Hampshire College: Land Context Drawing Template (Satellite)",
+          subtitle = sprintf(
+            "Generated %s. Hand-sketch on this template, then retrace in the app to bring concepts back as a layer.",
+            format(Sys.Date(), "%B %d, %Y")),
+          caption  = paste(
+            "Imagery: Esri World Imagery.",
+            "Projection: NAD83 / Massachusetts State Plane Mainland (m).",
+            "Teal = parcel boundaries. Yellow lines = roads.",
+            "Cyan = DEP wetlands outline. Amber = permanent protected open space.",
+            "Dashed pink = NHESP Priority Habitat."),
+          x = NULL, y = NULL
+        ) +
+        ggplot2::theme_bw(base_size = 9) +
+        ggplot2::theme(
+          panel.grid       = ggplot2::element_blank(),
+          axis.text        = ggplot2::element_text(size = 6, color = "#666"),
+          plot.title       = ggplot2::element_text(size = 13, face = "bold"),
+          plot.subtitle    = ggplot2::element_text(size = 9, color = "#444",
+                              margin = ggplot2::margin(b = 6)),
+          plot.caption     = ggplot2::element_text(size = 7, color = "#666",
+                              hjust = 0),
+          plot.margin      = ggplot2::margin(10, 12, 8, 12)
+        )
+
+      ggplot2::ggsave(file, plot = p, width = 11, height = 8.5,
+                      units = "in", device = "pdf", dpi = 200)
+    }
+  )
+
+  # Live summary of drawn shapes (count, area, length)
+  output$drawn_summary <- renderUI({
+    shapes <- drawn_sf()
+
+    if (is.null(shapes) || nrow(shapes) == 0) {
+      return(tags$div(
+        class = "helper-text",
+        style = "font-size: 13px;",
+        "Draw shapes using the toolbar at the top-left of the map. ",
+        "Live area and length will appear here."
+      ))
+    }
+
+    geom_types <- as.character(sf::st_geometry_type(shapes))
+    is_poly <- geom_types %in% c("POLYGON", "MULTIPOLYGON")
+    is_line <- geom_types %in% c("LINESTRING", "MULTILINESTRING")
+
+    polys <- shapes[is_poly, ]
+    lines <- shapes[is_line, ]
+
+    polys_m <- if (nrow(polys) > 0) sf::st_transform(polys, 26986) else NULL
+    lines_m <- if (nrow(lines) > 0) sf::st_transform(lines, 26986) else NULL
+
+    poly_sqm   <- if (!is.null(polys_m)) sum(as.numeric(sf::st_area(polys_m))) else 0
+    poly_acres <- poly_sqm / 4046.8564224
+    poly_sqft  <- poly_sqm * 10.7639104
+    # Perimeter = length of polygon boundary (in meters), summed across all rings
+    poly_perim_ft <- if (!is.null(polys_m)) {
+      sum(as.numeric(sf::st_length(sf::st_cast(polys_m, "MULTILINESTRING")))) * 3.28084
+    } else 0
+
+    line_feet <- if (!is.null(lines_m)) {
+      sum(as.numeric(sf::st_length(lines_m))) * 3.28084
+    } else 0
+
+    metric_pair <- function(label, value) {
+      tags$div(
+        class = "metric-row",
+        tags$div(class = "metric-label", style = "font-size: 11px;", label),
+        tags$div(class = "enc-fig", style = "font-size: 13px; font-weight: 600;", value)
+      )
+    }
+
+    tagList(
+      if (nrow(polys) > 0) {
+        tags$div(
+          style = "margin-bottom: 10px;",
+          tags$div(class = "metric-label",
+                   paste0(nrow(polys), " ", if (nrow(polys) == 1) "polygon" else "polygons")),
+          tags$div(class = "metric-value",
+                   paste0(formatC(round(poly_acres, 2), big.mark = ",",
+                                  format = "f", digits = 2), " acres")),
+          tags$div(style = "margin-top: 6px;",
+            metric_pair("Square feet",
+                        formatC(round(poly_sqft), big.mark = ",", format = "d")),
+            metric_pair("Perimeter",
+                        paste0(formatC(round(poly_perim_ft), big.mark = ",",
+                                       format = "d"), " ft"))
+          )
+        )
+      },
+      if (nrow(lines) > 0) {
+        tags$div(
+          style = "margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee;",
+          tags$div(class = "metric-label",
+                   paste0(nrow(lines), " ", if (nrow(lines) == 1) "line" else "lines")),
+          tags$div(class = "metric-value",
+                   paste0(formatC(round(line_feet), big.mark = ","), " ft"))
+        )
+      }
+    )
+  })
+
+  # ===== End Land context tab =====
+
+  # ===== Developable land tab =====
+
+  # Active buffer scenario: which net-easy column and polygon set to use.
+  dev_is_strict   <- reactive(isTRUE(input$dev_buffer_scenario == "strict"))
+  dev_acres_col   <- reactive(if (dev_is_strict()) "net_easy_strict_acres" else "net_easy_acres")
+  dev_active_polys <- reactive(if (dev_is_strict()) parcels_dev_poly_strict else parcels_dev_poly)
+  dev_scenario_lbl <- reactive(if (dev_is_strict()) "strict 200-ft buffer" else "standard 100-ft buffer")
+
+  output$dev_stat_tiles <- renderUI({
+    if (is.null(parcels_dev)) {
+      return(tags$div(class = "helper-text",
+                      "Developable analysis not found. Run ",
+                      tags$code("Rscript data-prep/compute_developable.R"),
+                      " to generate it."))
+    }
+    df <- sf::st_drop_geometry(parcels_dev)
+    gross   <- sum(df$gross_acres, na.rm = TRUE)
+    net_eas <- sum(df[[dev_acres_col()]], na.rm = TRUE)
+    frnt    <- sum(df$frontage_ft, na.rm = TRUE)
+    tagList(
+      stat_tile("Parcels analyzed", formatC(nrow(df), big.mark = ",")),
+      stat_tile("Gross acres",
+                formatC(round(gross, 1), big.mark = ",", format = "f", digits = 1),
+                "Hampshire College holdings"),
+      stat_tile("Net easy-to-build",
+                paste0(formatC(round(net_eas, 1), big.mark = ",",
+                               format = "f", digits = 1), " ac"),
+                paste0(round(100 * net_eas / max(gross, 1), 1), "% of gross · ",
+                       dev_scenario_lbl())),
+      stat_tile("Estimated frontage",
+                paste0(formatC(round(frnt), big.mark = ",", format = "d"), " ft"),
+                paste0("~", round(frnt / 5280, 2), " miles of road frontage"))
+    )
+  })
+
+  # Pre-compute the permanent open space subset once (used as an overlay
+  # AND mirrors the input to the developability calc).
+  protected_open_perm <- if (!is.null(protected_open)) {
+    protected_open[!is.na(protected_open$LEV_PROT) &
+                   protected_open$LEV_PROT == "P", ]
+  } else NULL
+
+  # Build the parcel popup HTML once per parcel — it doesn't depend on inputs.
+  dev_popup_html <- if (!is.null(parcels_dev)) {
+    df <- sf::st_drop_geometry(parcels_dev)
+    paste0(
+      "<div style='font-family:\"Open Sans\",sans-serif; font-size:13px; min-width: 260px;'>",
+      "<strong>", df$MAP_PAR_ID, "</strong> ",
+      "<span style='color:#777;'>(", df$TOWN, ")</span><br/>",
+      ifelse(nchar(df$SITE_ADDR) > 0, paste0(df$SITE_ADDR, "<br/>"), ""),
+      "<table style='margin-top:8px; font-size:12px; border-collapse:collapse;'>",
+      "<tr><td>Gross</td><td style='text-align:right; padding-left:14px;'>",
+      df$gross_acres, " ac</td></tr>",
+      "<tr><td>Net unconstrained</td><td style='text-align:right; padding-left:14px;'>",
+      df$net_unconstrained_acres, " ac</td></tr>",
+      "<tr><td><strong>Net easy (100 ft)</strong></td><td style='text-align:right; padding-left:14px;'><strong>",
+      df$net_easy_acres, " ac</strong></td></tr>",
+      "<tr><td>Net easy (200 ft)</td><td style='text-align:right; padding-left:14px;'>",
+      df$net_easy_strict_acres, " ac</td></tr>",
+      "<tr><td>% developable</td><td style='text-align:right; padding-left:14px;'>",
+      df$pct_developable, "%</td></tr>",
+      "<tr><td>Frontage</td><td style='text-align:right; padding-left:14px;'>",
+      formatC(df$frontage_ft, big.mark = ",", format = "d"), " ft</td></tr>",
+      "</table>",
+      ifelse(!is.na(df$frontage_roads) & nchar(df$frontage_roads) > 0,
+             paste0("<div style='color:#666; font-size:11px; margin-top:6px;'>On: ",
+                    df$frontage_roads, "</div>"),
+             ""),
+      "</div>"
+    )
+  } else character(0)
+
+  # Single function that paints the whole map state. Called once from
+  # renderLeaflet for the initial frame, and again from an observer for every
+  # control change. Works on both leaflet() and leafletProxy() objects.
+  # HTML for the legend, reflecting which overlays are visible. Selected-parcel
+  # row is included only when there's an active selection.
+  build_dev_legend_html <- function(overlays, has_selection) {
+    row <- function(swatch_css, label) {
+      sprintf(
+        '<div class="hd-leg-row"><span class="hd-leg-swatch" style="%s"></span><span class="hd-leg-label">%s</span></div>',
+        swatch_css, label
+      )
+    }
+    rows <- c(row("background:#009b9e; border:none; height:3px; margin-top:7px;",
+                  "Parcel boundary"))
+    if ("devarea"   %in% overlays) rows <- c(rows, row(
+      "background:rgba(156,204,101,0.85); border-color:#558B2F;",
+      "Developable area"))
+    if ("wetlands"  %in% overlays) rows <- c(rows, row(
+      "background:rgba(79,195,247,0.7); border-color:#01579B;",
+      "DEP wetlands"))
+    if ("vernalpools" %in% overlays) rows <- c(rows, row(
+      "background:#1DE9B6; border-color:#004D40; border-radius:50%;",
+      "Vernal pool (certified)"))
+    if ("openspace" %in% overlays) rows <- c(rows, row(
+      "background:rgba(255,193,7,0.55); border-color:#FF6F00;",
+      "Permanent open space"))
+    if ("habitat"   %in% overlays) rows <- c(rows, row(
+      "background:rgba(186,104,200,0.55); border:1.5px dashed #6A1B9A;",
+      "Priority habitat"))
+    if ("hillshade" %in% overlays) rows <- c(rows, row(
+      "background:linear-gradient(135deg,#ffffff 0%,#777 100%); border-color:#555;",
+      "Hillshade"))
+    if ("concepts"  %in% overlays) rows <- c(rows, row(
+      "background:rgba(233,30,99,0.3); border:1.5px dashed #880E4F;",
+      "Concept sketch"))
+    if (has_selection) rows <- c(rows, row(
+      "background:transparent; border-color:#FFEB3B; border-width:3px;",
+      "Selected parcel"))
+
+    paste0(
+      '<div class="hd-dev-legend">',
+      '<div class="hd-leg-title">Legend</div>',
+      paste(rows, collapse = ""),
+      '</div>'
+    )
+  }
+
+  apply_dev_layers <- function(map, overlays, overlay_opacity = 1.0,
+                               has_selection = FALSE, dev_polys = parcels_dev_poly,
+                               is_proxy = FALSE) {
+    if (is.null(parcels_dev)) return(map)
+
+    label_vec <- paste0(parcels_dev$MAP_PAR_ID, " — ",
+                        parcels_dev$pct_developable, "% developable")
+
+    if (is_proxy) {
+      map <- map |>
+        clearGroup("parcels_dev") |>
+        clearGroup("dev_hillshade") |>
+        clearGroup("dev_wetlands") |>
+        clearGroup("dev_vernalpools") |>
+        clearGroup("dev_openspace") |>
+        clearGroup("dev_habitat") |>
+        clearGroup("dev_devarea") |>
+        clearGroup("dev_concepts") |>
+        removeControl("dev_legend")
+    }
+
+    # Multiplier applied to each overlay's base fill opacity
+    om <- overlay_opacity
+
+    # Hillshade tile (under constraint polys)
+    if ("hillshade" %in% overlays) {
+      map <- map |> addTiles(
+        urlTemplate = ESRI_HILLSHADE_URL,
+        attribution = "Hillshade &copy; Esri",
+        options     = tileOptions(opacity = 0.5 * om, maxZoom = 19),
+        group       = "dev_hillshade"
+      )
+    }
+    if ("wetlands" %in% overlays && !is.null(dep_wetlands)) {
+      map <- map |> addPolygons(
+        data = dep_wetlands, group = "dev_wetlands",
+        fillColor = "#4FC3F7", fillOpacity = 0.40 * om,
+        color = "#01579B", opacity = 0.9 * om, weight = 0.6,
+        options = pathOptions(interactive = FALSE)
+      )
+    }
+    if ("vernalpools" %in% overlays &&
+        (!is.null(vernal_certified) || !is.null(vernal_potential))) {
+      if (!is.null(vernal_potential) && nrow(vernal_potential) > 0) {
+        map <- map |> addCircleMarkers(
+          data = vernal_potential, group = "dev_vernalpools",
+          radius = 4, stroke = TRUE, weight = 1.5,
+          color = "#00897B", fillColor = "#FFFFFF",
+          opacity = pmin(1, om), fillOpacity = pmin(1, 0.5 * om),
+          label = "Potential vernal pool",
+          options = pathOptions(interactive = FALSE)
+        )
+      }
+      if (!is.null(vernal_certified) && nrow(vernal_certified) > 0) {
+        map <- map |> addCircleMarkers(
+          data = vernal_certified, group = "dev_vernalpools",
+          radius = 5, stroke = TRUE, weight = 1.5,
+          color = "#004D40", fillColor = "#1DE9B6",
+          opacity = pmin(1, om), fillOpacity = pmin(1, 0.9 * om),
+          label = ~paste0("Certified vernal pool #", CVP_NUM),
+          options = pathOptions(interactive = FALSE)
+        )
+      }
+    }
+    if ("openspace" %in% overlays && !is.null(protected_open_perm)) {
+      map <- map |> addPolygons(
+        data = protected_open_perm, group = "dev_openspace",
+        fillColor = "#FFC107", fillOpacity = 0.35 * om,
+        color = "#FF6F00", opacity = 0.9 * om, weight = 1,
+        options = pathOptions(interactive = FALSE)
+      )
+    }
+    if ("habitat" %in% overlays && !is.null(priority_habitat)) {
+      map <- map |> addPolygons(
+        data = priority_habitat, group = "dev_habitat",
+        fillColor = "#BA68C8", fillOpacity = 0.30 * om,
+        color = "#6A1B9A", opacity = 0.9 * om, weight = 1.3,
+        dashArray = "6,3",
+        options = pathOptions(interactive = FALSE)
+      )
+    }
+    if ("devarea" %in% overlays && !is.null(dev_polys)) {
+      map <- map |> addPolygons(
+        data = dev_polys, group = "dev_devarea",
+        fillColor = "#9CCC65", fillOpacity = 0.60 * om,
+        color = "#558B2F", opacity = 0.95 * om, weight = 1,
+        label = ~paste0(MAP_PAR_ID, " — ", round(net_easy_acres, 1),
+                        " ac easy-to-build"),
+        options = pathOptions(interactive = FALSE)
+      )
+    }
+    if ("concepts" %in% overlays && !is.null(concept_sketches)) {
+      geom_types <- as.character(sf::st_geometry_type(concept_sketches))
+      is_poly <- geom_types %in% c("POLYGON", "MULTIPOLYGON")
+      is_line <- geom_types %in% c("LINESTRING", "MULTILINESTRING")
+      if (any(is_poly)) {
+        map <- map |> addPolygons(
+          data = concept_sketches[is_poly, ], group = "dev_concepts",
+          fillColor = "#E91E63", fillOpacity = 0.30 * om,
+          color = "#880E4F", opacity = pmin(1, om),
+          weight = 2, dashArray = "8,3",
+          label = ~paste0("Concept: ", concept_source),
+          options = pathOptions(interactive = FALSE)
+        )
+      }
+      if (any(is_line)) {
+        map <- map |> addPolylines(
+          data = concept_sketches[is_line, ], group = "dev_concepts",
+          color = "#880E4F", opacity = pmin(1, om),
+          weight = 3, dashArray = "8,3",
+          label = ~paste0("Concept: ", concept_source),
+          options = pathOptions(interactive = FALSE)
+        )
+      }
+    }
+
+    # Parcel polygons — outlines only.
+    map <- map |> addPolygons(
+      data        = parcels_dev,
+      group       = "parcels_dev",
+      layerId     = ~as.character(MAP_PAR_ID),
+      fill        = FALSE,
+      color       = "#009b9e",
+      weight      = 2.8,
+      opacity     = 1,
+      label       = label_vec,
+      popup       = dev_popup_html,
+      highlightOptions = highlightOptions(
+        weight = 5, color = "#ffffff", opacity = 1,
+        bringToFront = TRUE)
+    )
+
+    map <- map |> addControl(
+      html     = HTML(build_dev_legend_html(overlays, has_selection)),
+      position = "bottomright",
+      layerId  = "dev_legend"
+    )
+
+    map
+  }
+
+  output$dev_map <- renderLeaflet({
+    overlays        <- isolate(input$dev_overlays %||% c("devarea", "wetlands"))
+    overlay_opacity <- isolate(input$dev_overlay_opacity %||% 1.0)
+    init_polys      <- isolate(dev_active_polys())
+
+    m <- leaflet(options = leafletOptions(zoomControl = TRUE)) |>
+      addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
+      addProviderTiles("CartoDB.Positron", group = "Light") |>
+      addLayersControl(
+        baseGroups = c("Satellite", "Light"),
+        options = layersControlOptions(collapsed = FALSE)
+      )
+    m <- apply_dev_layers(m, overlays, overlay_opacity = overlay_opacity,
+                          has_selection = FALSE, dev_polys = init_polys,
+                          is_proxy = FALSE)
+    if (!is.null(parcels_dev)) {
+      bb <- sf::st_bbox(parcels_dev)
+      m <- m |> fitBounds(bb[["xmin"]], bb[["ymin"]], bb[["xmax"]], bb[["ymax"]])
+    } else {
+      m <- m |> setView(lng = -72.55, lat = 42.34, zoom = 14)
+    }
+    m
+  })
+
+  # Update on control changes only (initial paint happens inside renderLeaflet)
+  observeEvent(
+    list(input$dev_overlays, input$dev_overlay_opacity,
+         input$dev_buffer_scenario, dev_selected_parcels()),
+    ignoreInit = TRUE,
+    {
+      apply_dev_layers(
+        leafletProxy("dev_map"),
+        input$dev_overlays %||% character(0),
+        overlay_opacity = input$dev_overlay_opacity %||% 1.0,
+        has_selection   = length(dev_selected_parcels()) > 0,
+        dev_polys       = dev_active_polys(),
+        is_proxy = TRUE
+      )
+    }
+  )
+
+  # ----- Parcel selection on the dev map -----
+  dev_selected_parcels <- reactiveVal(character(0))
+
+  observeEvent(input$dev_map_shape_click, {
+    click <- input$dev_map_shape_click
+    if (is.null(click$id)) return()
+    id <- as.character(click$id)
+    current <- dev_selected_parcels()
+    if (id %in% current) {
+      dev_selected_parcels(setdiff(current, id))
+    } else {
+      dev_selected_parcels(union(current, id))
+    }
+  })
+
+  observeEvent(input$clear_dev_selection, {
+    dev_selected_parcels(character(0))
+  })
+
+  # Draw a yellow highlight outline on top of any selected parcels. This group
+  # ("dev_selection") is NOT cleared by apply_dev_layers, so it persists across
+  # control changes (color, opacity, overlays).
+  observe({
+    sel <- dev_selected_parcels()
+    proxy <- leafletProxy("dev_map") |> clearGroup("dev_selection")
+    if (length(sel) == 0 || is.null(parcels_dev)) return()
+    sel_polys <- parcels_dev[parcels_dev$MAP_PAR_ID %in% sel, ]
+    if (nrow(sel_polys) == 0) return()
+    proxy |> addPolygons(
+      data    = sel_polys,
+      group   = "dev_selection",
+      fill    = FALSE,
+      color   = "#FFEB3B",
+      weight  = 5,
+      opacity = 1,
+      options = pathOptions(interactive = FALSE)
+    )
+  })
+
+  output$dev_selection_summary <- renderUI({
+    sel <- dev_selected_parcels()
+    if (length(sel) == 0 || is.null(parcels_dev)) {
+      return(tags$div(
+        class = "helper-text",
+        "Click parcels on the map to add them to a selection. ",
+        "Click again to remove. Selected parcels get a yellow highlight, and ",
+        "their combined developable area appears here."
+      ))
+    }
+    df <- sf::st_drop_geometry(parcels_dev) |>
+      dplyr::filter(MAP_PAR_ID %in% sel)
+    gross   <- sum(df$gross_acres,             na.rm = TRUE)
+    net_unc <- sum(df$net_unconstrained_acres, na.rm = TRUE)
+    net_eas <- sum(df[[dev_acres_col()]],      na.rm = TRUE)
+    frnt    <- sum(df$frontage_ft,             na.rm = TRUE)
+    fmt_ac  <- function(x) formatC(round(x, 1), big.mark = ",", format = "f", digits = 1)
+    fmt_int <- function(x) formatC(round(x), big.mark = ",", format = "d")
+    tagList(
+      tags$div(
+        class = "stats-row",
+        style = "grid-template-columns: repeat(4, 1fr); margin: 0;",
+        stat_tile("Selected parcels", formatC(nrow(df), big.mark = ",")),
+        stat_tile("Gross acres", fmt_ac(gross), "selected total"),
+        stat_tile("Net easy-to-build",
+                  paste0(fmt_ac(net_eas), " ac"),
+                  paste0(round(100 * net_eas / max(gross, 1), 1),
+                         "% of selected gross")),
+        stat_tile("Estimated frontage",
+                  paste0(fmt_int(frnt), " ft"),
+                  paste0("~", round(frnt / 5280, 2), " mi"))
+      ),
+      tags$div(
+        class = "helper-text",
+        style = "margin-top: 12px; font-size: 12px;",
+        "Net unconstrained: ", tags$strong(fmt_ac(net_unc), "ac"),
+        " (gross minus wetlands and permanent open space). Net easy-to-build ",
+        "additionally subtracts the wetland buffer (", dev_scenario_lbl(),
+        ") and any NHESP Priority Habitat overlap. See the Layer guide for ",
+        "full methodology."
+      )
+    )
+  })
+
+  output$dev_table <- renderDT({
+    if (is.null(parcels_dev)) return(NULL)
+    df <- sf::st_drop_geometry(parcels_dev) |>
+      dplyr::select(TOWN, MAP_PAR_ID, SITE_ADDR,
+                    gross_acres, net_unconstrained_acres,
+                    net_easy_acres, net_easy_strict_acres,
+                    pct_developable, frontage_ft, frontage_roads) |>
+      dplyr::arrange(dplyr::desc(net_easy_acres))
+    DT::datatable(
+      df,
+      colnames = c("Town", "Parcel", "Address",
+                   "Gross ac", "Net unconstr. ac",
+                   "Net easy (100ft)", "Net easy (200ft)",
+                   "% dev.", "Frontage (ft)", "Roads"),
+      rownames = FALSE,
+      selection = "none",
+      options = list(pageLength = 25, dom = "tip", scrollX = TRUE,
+                     columnDefs = list(list(className = "dt-right",
+                                            targets = c(3, 4, 5, 6, 7, 8))))
+    ) |>
+      DT::formatRound(c("gross_acres", "net_unconstrained_acres",
+                        "net_easy_acres", "net_easy_strict_acres"),
+                      digits = 2) |>
+      DT::formatRound("pct_developable", digits = 1) |>
+      DT::formatCurrency("frontage_ft", currency = "", digits = 0)
+  }, server = FALSE)
+
+  # ===== End Developable land tab =====
+
   # ---- Download handlers ----
   safe_cols <- function(d) {
     keep <- intersect(export_cols, names(d))
