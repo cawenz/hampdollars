@@ -13,6 +13,14 @@ FT_TO_M    <- 0.3048
 SQM_ACRE   <- 4046.8564224
 acres <- function(g) as.numeric(st_area(st_transform(g, CRS_MA))) / SQM_ACRE
 
+# Net buildable density presets (units/acre, after ~33% for streets/infrastructure).
+# Row-home figure (6.4) is from the project's CLT modeling: 98 ac -> ~626 homes.
+DENSITY <- c("Row homes" = 6.4, "Townhouses" = 12, "Low-rise multifamily" = 20)
+fmt <- function(x) formatC(round(x), format = "d", big.mark = ",")
+units_html <- function(nm, ac) sprintf(
+  "<b>%s</b> · %.1f ac<br>Row homes: ~%s · Townhouses: ~%s · Multifamily: ~%s homes",
+  nm, ac, fmt(ac*DENSITY[1]), fmt(ac*DENSITY[2]), fmt(ac*DENSITY[3]))
+
 # ---- vision themes (one leaflet group per KML folder) ----------------------
 # folder -> display label, fill color, fill opacity (Ring envelope = outline only)
 THEMES <- tibble::tribble(
@@ -53,6 +61,22 @@ r100_w  <- to_wgs(ring100); r200_w <- to_wgs(ring200)
 
 parcels <- st_read(PARCELS, quiet = TRUE) |> st_transform(4326) |> st_make_valid()
 
+# Development areas -> unit yield + centroid label points
+dev      <- read_theme("Development")
+dev$rowhomes <- round(dev$.ac * DENSITY[["Row homes"]])
+dev_pts  <- st_transform(suppressWarnings(st_point_on_surface(st_transform(dev, CRS_MA))), 4326)
+dev_xy   <- st_coordinates(dev_pts)
+dev_tot  <- sum(dev$.ac)
+cap_html <- sprintf(paste0(
+  "<div style='background:rgba(255,255,255,0.93); padding:8px 11px; border-radius:8px; ",
+  "font:13px/1.45 Arial, sans-serif; box-shadow:0 1px 4px rgba(0,0,0,.25); max-width:240px;'>",
+  "<b>Housing capacity — %.0f development acres</b><br>",
+  "Row homes (6.4/ac): <b>~%s</b><br>Townhouses (12/ac): <b>~%s</b><br>",
+  "Low-rise multifamily (20/ac): <b>~%s</b>",
+  "<div style='font-size:11px; color:#666; margin-top:4px;'>Net of ~33%% for streets ",
+  "(CLT model). Map labels show row-home counts; hover an area for all densities.</div></div>"),
+  dev_tot, fmt(dev_tot*DENSITY[1]), fmt(dev_tot*DENSITY[2]), fmt(dev_tot*DENSITY[3]))
+
 # ---- build map -------------------------------------------------------------
 m <- leaflet(height = "97vh", width = "100%", options = leafletOptions(preferCanvas = TRUE)) |>
   addProviderTiles(providers$CartoDB.Positron, group = "Map") |>
@@ -62,12 +86,21 @@ m <- leaflet(height = "97vh", width = "100%", options = leafletOptions(preferCan
 
 for (i in seq_len(nrow(THEMES))) {
   g <- read_theme(THEMES$layer[i]); if (is.null(g) || !nrow(g)) next
+  lab <- if (THEMES$layer[i] == "Development")
+           lapply(seq_len(nrow(g)), function(j) htmltools::HTML(units_html(g$.nm[j], g$.ac[j])))
+         else lapply(sprintf("<b>%s</b><br>%s ac", g$.nm, formatC(g$.ac, format="f", digits=1)), htmltools::HTML)
   m <- m |> addPolygons(data = g, group = THEMES$label[i],
         color = THEMES$col[i], weight = 2, opacity = 0.9,
-        fillColor = THEMES$col[i], fillOpacity = THEMES$op[i],
-        label = ~lapply(sprintf("<b>%s</b><br>%s ac", .nm, formatC(.ac, format="f", digits=1)), htmltools::HTML),
+        fillColor = THEMES$col[i], fillOpacity = THEMES$op[i], label = lab,
         highlightOptions = highlightOptions(weight = 3, fillOpacity = min(THEMES$op[i] + 0.2, 0.8), bringToFront = TRUE))
 }
+# Permanent row-home unit labels on each development area (toggle with the group)
+m <- m |> addLabelOnlyMarkers(
+  lng = dev_xy[, 1], lat = dev_xy[, 2], group = "Development (housing + commercial)",
+  label = lapply(sprintf("~%s homes", fmt(dev$rowhomes)), htmltools::HTML),
+  labelOptions = labelOptions(noHide = TRUE, direction = "center", textOnly = TRUE,
+    style = list("color" = "#7a1f12", "font-weight" = "700", "font-size" = "12px",
+                 "text-shadow" = "0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff")))
 
 m <- m |>
   addPolygons(data = wet_w, group = "Wetlands (DEP)",
@@ -83,6 +116,7 @@ m <- m |>
                       "Wetland buffer · +200 ft (Amherst rule)"),
     options = layersControlOptions(collapsed = FALSE)) |>
   hideGroup(c("Wetland buffer · 100 ft (state WPA)", "Wetland buffer · +200 ft (Amherst rule)")) |>
+  addControl(html = cap_html, position = "bottomleft") |>
   fitBounds(lng1 = as.numeric(st_bbox(envelope |> st_transform(4326))[1]),
             lat1 = as.numeric(st_bbox(envelope |> st_transform(4326))[2]),
             lng2 = as.numeric(st_bbox(envelope |> st_transform(4326))[3]),
