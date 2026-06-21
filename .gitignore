@@ -4,3 +4,7 @@
 .Ruserdata
 .claude/
 rsconnect/.DS_Store
+
+# Generated map output (regenerate with: Rscript vision_map.R)
+vision_map.html
+vision_map_files/
