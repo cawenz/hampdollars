@@ -8,3 +8,6 @@ rsconnect/.DS_Store
 # Generated map output (regenerate with: Rscript vision_map.R)
 vision_map.html
 vision_map_files/
+
+# Generated preview from the shape-tightening script
+data-prep/tighten_preview.png
