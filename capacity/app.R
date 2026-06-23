@@ -19,7 +19,8 @@ dname <- function(d) names(DENS)[match(d, DENS)]
 AMH_COL <- "#C0392B"; HAD_COL <- "#1F6F8B"; CONS_COL <- "#2E7D32"; CORE_COL <- "#607D8B"
 CATS <- c("Development", "Conservation", "Core Campus")
 TAX <- c(Amherst = 0.01795, Hadley = 0.01163)
-HOME_VAL <- 395000
+# Average assessed value per home, by housing type (editable in the app)
+HOME_VALS <- c("row homes" = 395000, "townhouses" = 325000, "multifamily" = 250000)
 dollar0 <- function(x) paste0("$", format(round(x), big.mark = ","))
 
 towns_m <- st_transform(st_make_valid(st_read(file.path(DATA, "amherst_hadley.geojson"), quiet = TRUE)), CRS_MA)
@@ -110,8 +111,9 @@ ui <- page_fluid(
     "Amherst / Hadley split, and tax revenue update live."),
   layout_columns(col_widths = c(8, 4), gap = "12px",
     card(card_header("Campus areas — click or draw an area to assign land use"),
-         div(style = "margin-bottom:6px;",
-             actionButton("reset", "↺ Reset to original areas", class = "btn-sm btn-outline-secondary")),
+         div(style = "margin-bottom:6px;display:flex;gap:8px;",
+             actionButton("reset", "↺ Reset to original areas", class = "btn-sm btn-outline-secondary"),
+             downloadButton("export_pdf", "⤓ Export PDF", class = "btn-sm btn-outline-primary")),
          leafletOutput("map", height = 470)),
     layout_columns(col_widths = 12, gap = "8px",
       value_box("Total homes", textOutput("tot"), theme = "primary"),
@@ -119,14 +121,18 @@ ui <- page_fluid(
       value_box("In Hadley",  textOutput("tot_had"), theme = value_box_theme(bg = HAD_COL, fg = "white")),
       uiOutput("acreage"))),
   card(card_header("Annual property-tax revenue at build-out"),
-    layout_columns(col_widths = c(3, 3, 3, 3), gap = "10px",
-      div(tags$label("Avg assessed home value", style = "font-weight:600;color:#015B4C;"),
-          numericInput("value", NULL, value = HOME_VAL, min = 100000, max = 1000000, step = 10000)),
+    tags$label("Average assessed value per home, by housing type",
+               style = "font-weight:600;color:#015B4C;"),
+    layout_columns(col_widths = c(4, 4, 4), gap = "10px",
+      numericInput("v_row",   "Row homes",            value = HOME_VALS[["row homes"]],   min = 100000, max = 1500000, step = 10000),
+      numericInput("v_town",  "Townhouses",           value = HOME_VALS[["townhouses"]],  min = 100000, max = 1500000, step = 10000),
+      numericInput("v_multi", "Low-rise multifamily", value = HOME_VALS[["multifamily"]], min = 100000, max = 1500000, step = 10000)),
+    layout_columns(col_widths = c(4, 4, 4), gap = "10px",
       value_box("Amherst tax / yr", textOutput("tax_amh"), theme = value_box_theme(bg = AMH_COL, fg = "white")),
       value_box("Hadley tax / yr", textOutput("tax_had"), theme = value_box_theme(bg = HAD_COL, fg = "white")),
       value_box("Combined / yr", textOutput("tax_tot"), theme = "primary")),
     tags$p(class = "text-muted", style = "font-size:12px;margin:6px 2px 0;",
-      "Amherst residential rate 1.795%, Hadley 1.163% (FY2025). Revenue ≈ homes × home value × rate.")),
+      "Amherst residential rate 1.795%, Hadley 1.163% (FY2025). Revenue ≈ Σ(homes × value for its housing type) × town rate.")),
   card(card_header("Development areas — density & units"), uiOutput("captable"))
 )
 
@@ -145,14 +151,26 @@ server <- function(input, output, session) {
     had <- vapply(seq_along(a), function(i) d[i] * a[[i]]$ac_had, numeric(1))
     list(a = a, d = d, amh = amh, had = had, tot = amh + had)
   })
-  hv <- reactive({ v <- input$value; if (is.null(v) || is.na(v) || v <= 0) HOME_VAL else v })
+  vals <- reactive({                       # editable value per housing type (+ 0 for excluded)
+    g <- function(id, def) { v <- input[[id]]; if (is.null(v) || is.na(v) || v <= 0) def else v }
+    c("row homes"   = g("v_row",   HOME_VALS[["row homes"]]),
+      "townhouses"  = g("v_town",  HOME_VALS[["townhouses"]]),
+      "multifamily" = g("v_multi", HOME_VALS[["multifamily"]]),
+      "excluded"    = 0)
+  })
+  taxrev <- reactive({                      # Σ(homes × value-for-its-type) × town rate
+    cc <- calc(); val <- unname(vals()[vapply(cc$d, abbr, character(1))])
+    amh <- sum(cc$amh * val) * TAX[["Amherst"]]
+    had <- sum(cc$had * val) * TAX[["Hadley"]]
+    list(amh = amh, had = had, tot = amh + had)
+  })
 
   output$tot     <- renderText(format(round(sum(calc()$tot)), big.mark = ","))
   output$tot_amh <- renderText(format(round(sum(calc()$amh)), big.mark = ","))
   output$tot_had <- renderText(format(round(sum(calc()$had)), big.mark = ","))
-  output$tax_amh <- renderText(dollar0(sum(calc()$amh) * hv() * TAX[["Amherst"]]))
-  output$tax_had <- renderText(dollar0(sum(calc()$had) * hv() * TAX[["Hadley"]]))
-  output$tax_tot <- renderText(dollar0(sum(calc()$amh) * hv() * TAX[["Amherst"]] + sum(calc()$had) * hv() * TAX[["Hadley"]]))
+  output$tax_amh <- renderText(dollar0(taxrev()$amh))
+  output$tax_had <- renderText(dollar0(taxrev()$had))
+  output$tax_tot <- renderText(dollar0(taxrev()$tot))
   output$acreage <- renderUI({
     a <- areas()
     accat <- function(cat) round(sum(vapply(Filter(function(x) x$category == cat, a),
@@ -172,15 +190,90 @@ server <- function(input, output, session) {
       tags$td(style = paste0("padding:5px 8px;font-weight:600;color:", ifelse(a[[i]]$town == "Hadley", HAD_COL, AMH_COL), ";"), a[[i]]$town),
       tags$td(style = "padding:5px 8px;text-align:right;", sprintf("%.1f", a[[i]]$ac_amh + a[[i]]$ac_had)),
       tags$td(style = "padding:5px 8px;", dname(cc$d[i])),
+      tags$td(style = "padding:5px 8px;text-align:right;",
+              { t <- abbr(cc$d[i]); if (t == "excluded") "—" else dollar0(vals()[[t]]) }),
       tags$td(style = "padding:5px 8px;text-align:right;font-weight:600;",
               if (cc$d[i] == 0) "—" else format(round(cc$tot[i]), big.mark = ","))))
     tags$table(style = "width:100%;border-collapse:collapse;font-size:14px;",
       tags$thead(tags$tr(style = "text-align:left;border-bottom:2px solid #015B4C;color:#015B4C;",
         tags$th(style="padding:6px 8px;","Area"), tags$th(style="padding:6px 8px;","Town"),
         tags$th(style="padding:6px 8px;text-align:right;","Acres"), tags$th(style="padding:6px 8px;","Density"),
+        tags$th(style="padding:6px 8px;text-align:right;","Value/home"),
         tags$th(style="padding:6px 8px;text-align:right;","Homes"))),
       tags$tbody(rows))
   })
+
+  # ---- PDF export: static map of the current state + summary + table ---------
+  accat <- function(a, cat) round(sum(vapply(Filter(function(x) x$category == cat, a),
+                                             function(x) x$ac_amh + x$ac_had, numeric(1))))
+  output$export_pdf <- downloadHandler(
+    filename = function() paste0("hampshire-next-", Sys.Date(), ".pdf"),
+    content = function(file) {
+      library(ggplot2)
+      a <- areas(); cc <- calc(); vv <- vals(); tr <- taxrev()
+      cols <- c("Development · Amherst" = AMH_COL, "Development · Hadley" = HAD_COL,
+                "Conservation" = CONS_COL, "Core Campus" = CORE_COL)
+      leg <- vapply(a, function(x) if (x$category == "Development")
+                      paste0("Development · ", x$town) else x$category, character(1))
+      asf <- st_sf(leg = factor(leg, levels = names(cols)),
+                   geometry = st_sfc(lapply(a, `[[`, "geom"), crs = 4326))
+      bb2 <- st_bbox(asf)
+      mp <- ggplot() +
+        geom_sf(data = parcels, fill = NA, color = "#9a9a9a", linewidth = 0.15) +
+        geom_sf(data = st_transform(towns_m, 4326), fill = NA, color = "#555",
+                linewidth = 0.35, linetype = "21") +
+        geom_sf(data = asf, aes(fill = leg), color = "#333", linewidth = 0.2, alpha = 0.65) +
+        scale_fill_manual(values = cols, drop = FALSE, name = NULL) +
+        coord_sf(xlim = c(bb2[[1]], bb2[[3]]), ylim = c(bb2[[2]], bb2[[4]])) +
+        theme_void(base_size = 9) +
+        theme(legend.position = "bottom", plot.margin = margin(2, 2, 2, 2))
+      if (length(cc$a)) {
+        dl <- data.frame(
+          lng = vapply(cc$a, `[[`, numeric(1), "lng"),
+          lat = vapply(cc$a, `[[`, numeric(1), "lat"),
+          lab = vapply(seq_along(cc$a), function(i) if (cc$d[i] == 0) "excl."
+                       else format(round(cc$tot[i]), big.mark = ","), character(1)))
+        mp <- mp + geom_text(data = dl, aes(lng, lat, label = lab),
+                             size = 2.4, fontface = "bold", color = "#111")
+      }
+      money <- function(x) paste0("$", format(round(x), big.mark = ","))
+      sumtxt <- paste(
+        sprintf("Total homes: %s    (Amherst %s · Hadley %s)",
+                format(round(sum(cc$tot)), big.mark = ","),
+                format(round(sum(cc$amh)), big.mark = ","),
+                format(round(sum(cc$had)), big.mark = ",")),
+        sprintf("Acres assigned — Development %s · Conservation %s · Core Campus %s",
+                accat(a, "Development"), accat(a, "Conservation"), accat(a, "Core Campus")),
+        sprintf("Property tax / yr — Amherst %s · Hadley %s · Combined %s",
+                money(tr$amh), money(tr$had), money(tr$tot)),
+        sprintf("Home values — row homes %s · townhouses %s · multifamily %s",
+                money(vv[["row homes"]]), money(vv[["townhouses"]]), money(vv[["multifamily"]])),
+        sep = "\n")
+      if (length(cc$a)) {
+        td <- data.frame(check.names = FALSE, stringsAsFactors = FALSE,
+          Area = vapply(cc$a, `[[`, "", "name"),
+          Town = vapply(cc$a, `[[`, "", "town"),
+          Acres = sprintf("%.1f", vapply(cc$a, function(x) x$ac_amh + x$ac_had, numeric(1))),
+          Density = vapply(cc$d, dname, character(1)),
+          `Value/home` = vapply(cc$d, function(d) { t <- abbr(d); if (t == "excluded") "—" else money(vv[[t]]) }, character(1)),
+          Homes = vapply(seq_along(cc$a), function(i) if (cc$d[i] == 0) "—" else format(round(cc$tot[i]), big.mark = ","), character(1)))
+        tg <- gridExtra::tableGrob(td, rows = NULL, theme = gridExtra::ttheme_minimal(base_size = 8))
+      } else {
+        tg <- grid::textGrob("No Development areas assigned.", gp = grid::gpar(fontsize = 9, col = "#777"))
+      }
+      title <- grid::textGrob("Hampshire Next — land use & housing capacity", x = 0.01, hjust = 0,
+                              gp = grid::gpar(fontsize = 14, fontface = "bold", col = "#015B4C"))
+      subt  <- grid::textGrob(paste0("Current scenario · generated ", format(Sys.Date(), "%B %e, %Y")),
+                              x = 0.01, hjust = 0, gp = grid::gpar(fontsize = 9, col = "#666"))
+      sumg  <- grid::textGrob(sumtxt, x = 0.01, y = grid::unit(1, "npc"), just = c("left", "top"),
+                              gp = grid::gpar(fontsize = 9, lineheight = 1.4))
+      grDevices::cairo_pdf(file, width = 8.5, height = 11)
+      on.exit(grDevices::dev.off())
+      gridExtra::grid.arrange(title, subt, mp, sumg, grid::nullGrob(), tg, grid::nullGrob(), ncol = 1,
+        heights = grid::unit.c(grid::unit(22, "pt"), grid::unit(16, "pt"),
+                               grid::unit(5.4, "in"), grid::unit(84, "pt"), grid::unit(8, "pt"),
+                               grid::grobHeight(tg), grid::unit(1, "null")))
+    })
 
   output$map <- renderLeaflet({
     m <- leaflet() |>
